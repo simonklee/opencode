@@ -508,3 +508,22 @@ test("gracefully falls back when tui.json has invalid JSON", async () => {
     },
   })
 })
+
+test("gracefully falls back when tui.json fails schema validation", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(path.join(dir, "tui.json"), JSON.stringify({ theme: 123, diff_style: "broken" }, null, 2))
+      await fs.mkdir(managedConfigDir, { recursive: true })
+      await Bun.write(path.join(managedConfigDir, "tui.json"), JSON.stringify({ theme: "managed-fallback" }, null, 2))
+    },
+  })
+
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await TuiConfig.get()
+      expect(config.theme).toBe("managed-fallback")
+      expect(config.keybinds).toBeDefined()
+    },
+  })
+})

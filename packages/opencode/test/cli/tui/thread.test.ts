@@ -11,6 +11,7 @@ const state = {
   external: false,
   mode: "throw" as "throw" | "hang",
   server: undefined as Error | undefined,
+  shutdownMode: "resolve" as "resolve" | "hang",
   shutdown: undefined as Error | undefined,
 }
 
@@ -35,6 +36,7 @@ mock.module("@/util/rpc", () => ({
       call: async (method: string) => {
         seen.rpc.push(method)
         if (method === "shutdown") {
+          if (state.shutdownMode === "hang") return new Promise<void>(() => {})
           if (state.shutdown) throw state.shutdown
           return undefined
         }
@@ -75,7 +77,13 @@ mock.module("@/util/log", () => ({
 }))
 
 mock.module("@/util/timeout", () => ({
-  withTimeout: <T>(input: Promise<T>) => input,
+  withTimeout: <T>(input: Promise<T>) =>
+    Promise.race([
+      input,
+      new Promise<T>((_, reject) => {
+        setTimeout(() => reject(new Error("timeout")), 10)
+      }),
+    ]),
 }))
 
 mock.module("@/cli/network", () => ({
@@ -124,6 +132,7 @@ describe("tui thread", () => {
     state.external = false
     state.mode = "throw"
     state.server = undefined
+    state.shutdownMode = "resolve"
     state.shutdown = undefined
     seen.tui.length = 0
     seen.inst.length = 0
@@ -224,6 +233,16 @@ describe("tui thread", () => {
 
   test("still terminates the worker when shutdown rpc fails", async () => {
     state.shutdown = new Error("shutdown failed")
+
+    await withThread(undefined, async () => {
+      await expect(call()).rejects.toBe(stop)
+      expect(seen.rpc.filter((x) => x === "shutdown")).toHaveLength(1)
+      expect(seen.term).toBe(1)
+    })
+  })
+
+  test("still terminates the worker when shutdown rpc hangs", async () => {
+    state.shutdownMode = "hang"
 
     await withThread(undefined, async () => {
       await expect(call()).rejects.toBe(stop)

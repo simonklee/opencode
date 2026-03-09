@@ -11,7 +11,7 @@ const mod = {
   which: src + "/util/which.ts",
 }
 
-const init: Record<string, (...args: any[]) => any> = {}
+const init: Record<string, (...args: never[]) => unknown> = {}
 const seen = {
   destroy: 0,
   exit: 0,
@@ -19,7 +19,7 @@ const seen = {
   title: [] as string[],
 }
 
-function helper(input: { name: string; init: (...args: any[]) => any }) {
+function helper(input: { name: string; init: (...args: never[]) => unknown }) {
   init[input.name] = input.init
   return {
     use: undefined,
@@ -57,7 +57,7 @@ mock.module("@opentui/solid", () => ({
 }))
 
 mock.module("@/cli/error", () => ({
-  FormatError: () => undefined,
+  FormatError: (input: unknown) => (input instanceof Error ? input.message : undefined),
   FormatUnknownError: (input: unknown) => String(input),
 }))
 
@@ -109,7 +109,7 @@ mock.module(mod.which, () => ({
 }))
 
 describe("tui runtime", () => {
-  test("only performs terminal cleanup once when exit is triggered repeatedly", async () => {
+  test("only performs terminal cleanup and output once when exit is triggered repeatedly", async () => {
     await import(mod.exit)
 
     seen.destroy = 0
@@ -118,36 +118,52 @@ describe("tui runtime", () => {
     seen.title.length = 0
 
     const out: string[] = []
-    const write = process.stdout.write
+    const err: string[] = []
+    const stdout = process.stdout.write
+    const stderr = process.stderr.write
     ;(process.stdout as { write: typeof process.stdout.write }).write = ((chunk: string | Uint8Array) => {
       out.push(String(chunk))
       return true
     }) as typeof process.stdout.write
+    ;(process.stderr as { write: typeof process.stderr.write }).write = ((chunk: string | Uint8Array) => {
+      err.push(String(chunk))
+      return true
+    }) as typeof process.stderr.write
 
     try {
-      const exit = init.Exit({
+      const exit = init.Exit as (input: { onExit?: () => Promise<void> }) => {
+        message: { set: (value?: string) => () => void }
+      } & ((reason?: unknown) => Promise<void>)
+      const call = exit({
         onExit: async () => {
           seen.exit++
         },
       })
 
-      exit.message.set("bye")
-      await Promise.all([exit(), exit(), exit()])
+      call.message.set("bye")
+      const reason = new Error("boom")
+      await Promise.all([call(reason), call(reason), call(reason)])
 
       expect(seen.title).toEqual([""])
       expect(seen.destroy).toBe(1)
       expect(seen.flush).toBe(1)
       expect(seen.exit).toBe(1)
       expect(out).toEqual(["bye\n"])
+      expect(err).toEqual(["boom\n"])
     } finally {
-      ;(process.stdout as { write: typeof process.stdout.write }).write = write
+      ;(process.stdout as { write: typeof process.stdout.write }).write = stdout
+      ;(process.stderr as { write: typeof process.stderr.write }).write = stderr
     }
   })
 
   test("navigate does not print debug output", async () => {
     await import(mod.route)
 
-    const route = init.Route()
+    const route = init.Route as () => {
+      data: unknown
+      navigate: (input: { type: string; sessionID: string }) => void
+    }
+    const ctx = route()
     const logs: unknown[][] = []
     const log = console.log
     console.log = (...input: unknown[]) => {
@@ -155,12 +171,12 @@ describe("tui runtime", () => {
     }
 
     try {
-      route.navigate({ type: "session", sessionID: "abc" })
+      ctx.navigate({ type: "session", sessionID: "abc" })
     } finally {
       console.log = log
     }
 
-    expect(route.data).toEqual({ type: "session", sessionID: "abc" })
+    expect(ctx.data).toEqual({ type: "session", sessionID: "abc" })
     expect(logs).toHaveLength(0)
   })
 
