@@ -1,30 +1,44 @@
 import type { OptimizedBuffer } from "@opentui/core"
 
 // Spider-Verse "Into the Spider-Verse" post-processing effect
-// Combines CMYK plate misregistration, halftone dots, scanlines, and intermittent glitch
+// Combines CMYK plate misregistration, sparse halftone dots, scanlines, and localized glitches
+
+interface Glitch {
+  // Region bounds
+  x: number
+  y: number
+  w: number
+  h: number
+  // Effect
+  shift: number
+  colorBleed: boolean
+  ttl: number
+}
 
 export class SpiderVerseEffect {
   // --- Chromatic aberration (plate misregistration) ---
+  // Not always on — flickers in and out like a bad print job
   chromaticStrength = 1
-  chromaticPulse = true
+  private chromaticActive = false
+  private chromaticTtl = 0
+  private chromaticCooldown = 0
 
   // --- Halftone / Ben-Day dots ---
   halftoneEnabled = true
-  halftoneScale = 3 // dot grid size (cells)
-  halftoneStrength = 0.12 // how much to modulate
+  halftoneScale = 5 // larger grid = fewer, sparser dots
+  halftoneStrength = 0.08 // subtle
 
   // --- Scanlines ---
   scanlinesEnabled = true
-  scanlinesStrength = 0.06
+  scanlinesStrength = 0.04
 
   // --- Glitch ---
-  glitchChance = 0.4 // chance per second
-  maxGlitchLines = 2
-  maxShift = 8
+  // Rare, localized, brief
+  private glitchCooldown = 0
+  private glitches: Glitch[] = []
 
   // --- Internal state ---
   private time = 0
-  private glitchLines: { y: number; shift: number; ttl: number }[] = []
 
   apply = (buffer: OptimizedBuffer, deltaTime: number): void => {
     const width = buffer.width
@@ -32,32 +46,47 @@ export class SpiderVerseEffect {
     const buf = buffer.buffers
     this.time += deltaTime
 
-    // 1. Chromatic aberration — shift red channel left, blue channel right
-    this.applyChromaticAberration(buf.fg, buf.bg, width, height)
+    // 1. Chromatic aberration — intermittent, not constant
+    this.updateChromatic(deltaTime)
+    if (this.chromaticActive) {
+      this.applyChromaticAberration(buf.fg, buf.bg, width, height)
+    }
 
-    // 2. Halftone dots — Ben-Day pattern in mid-tones
+    // 2. Halftone dots — sparse Ben-Day pattern, only in mid-tones
     if (this.halftoneEnabled) {
       this.applyHalftone(buf.bg, width, height)
     }
 
-    // 3. Scanlines — subtle horizontal darkening
+    // 3. Scanlines
     if (this.scanlinesEnabled) {
       this.applyScanlines(buf.fg, buf.bg, width, height)
     }
 
-    // 4. Glitch — occasional horizontal line shifts
-    this.applyGlitch(buf, width, height, deltaTime)
+    // 4. Localized glitches — affect rectangular regions, not full rows
+    this.updateGlitches(buf, width, height, deltaTime)
+  }
+
+  // Chromatic aberration flickers on for brief moments, then goes away
+  private updateChromatic(dt: number): void {
+    if (this.chromaticActive) {
+      this.chromaticTtl -= dt
+      if (this.chromaticTtl <= 0) {
+        this.chromaticActive = false
+        // Long cooldown before next chromatic burst: 2-6 seconds
+        this.chromaticCooldown = 2.0 + Math.random() * 4.0
+      }
+    } else {
+      this.chromaticCooldown -= dt
+      if (this.chromaticCooldown <= 0) {
+        this.chromaticActive = true
+        // Brief active window: 0.1 - 0.5 seconds
+        this.chromaticTtl = 0.1 + Math.random() * 0.4
+      }
+    }
   }
 
   private applyChromaticAberration(fg: Float32Array, bg: Float32Array, width: number, height: number): void {
-    let strength = this.chromaticStrength
-    if (this.chromaticPulse) {
-      // Subtle pulse: strength oscillates between 0.5x and 1.5x
-      strength *= 1.0 + 0.5 * Math.sin(this.time * 2.5)
-    }
-    const offset = Math.max(1, Math.round(strength))
-
-    // Copy originals for reading
+    const offset = Math.max(1, Math.round(this.chromaticStrength))
     const srcFg = Float32Array.from(fg)
     const srcBg = Float32Array.from(bg)
 
@@ -70,14 +99,10 @@ export class SpiderVerseEffect {
         const rSrc = (y * width + rX) * 4
         const bSrc = (y * width + bX) * 4
 
-        // Foreground: red from left, green stays, blue from right
-        fg[dest] = srcFg[rSrc] // R
-        // fg[dest + 1] stays (green from center)
-        fg[dest + 2] = srcFg[bSrc + 2] // B
-
-        // Background: same treatment gives the "print misregistration" look
-        bg[dest] = srcBg[rSrc] // R
-        bg[dest + 2] = srcBg[bSrc + 2] // B
+        fg[dest] = srcFg[rSrc]
+        fg[dest + 2] = srcFg[bSrc + 2]
+        bg[dest] = srcBg[rSrc]
+        bg[dest + 2] = srcBg[bSrc + 2]
       }
     }
   }
@@ -89,33 +114,31 @@ export class SpiderVerseEffect {
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const ci = (y * width + x) * 4
-        // Luminance of this cell's background
         const lum = 0.299 * bg[ci] + 0.587 * bg[ci + 1] + 0.114 * bg[ci + 2]
 
-        // Halftone is most visible in mid-tones (0.2 - 0.8)
-        // Fade out at extremes (pure black / pure white don't show dots)
-        const midtoneFactor = 1.0 - Math.abs(lum - 0.5) * 2.0
+        // Only mid-tones — narrow band so most of the screen is unaffected
+        const midtoneFactor = Math.max(0, 1.0 - Math.abs(lum - 0.4) * 3.0)
         if (midtoneFactor <= 0) continue
 
-        // Create a regular dot pattern: distance from nearest grid center
-        const gx = (x % scale) - scale / 2
+        // Offset every other row for a more organic hex-grid feel
+        const ox = y % 2 === 0 ? 0 : Math.floor(scale / 2)
+        const gx = ((x + ox) % scale) - scale / 2
         const gy = (y % scale) - scale / 2
         const dist = Math.sqrt(gx * gx + gy * gy) / (scale / 2)
 
-        // Cells near grid centers get darkened (the "dot"), others get brightened
-        const dotFactor = dist < 0.8 ? -strength : strength * 0.5
-        const mod = dotFactor * midtoneFactor
+        // Only darken at dot centers, leave everything else alone
+        if (dist > 0.7) continue
+        const mod = -strength * midtoneFactor * (1.0 - dist / 0.7)
 
-        bg[ci] = Math.max(0, Math.min(1, bg[ci] + mod))
-        bg[ci + 1] = Math.max(0, Math.min(1, bg[ci + 1] + mod))
-        bg[ci + 2] = Math.max(0, Math.min(1, bg[ci + 2] + mod))
+        bg[ci] = Math.max(0, bg[ci] + mod)
+        bg[ci + 1] = Math.max(0, bg[ci + 1] + mod)
+        bg[ci + 2] = Math.max(0, bg[ci + 2] + mod)
       }
     }
   }
 
   private applyScanlines(fg: Float32Array, bg: Float32Array, width: number, height: number): void {
-    const s = this.scanlinesStrength
-    const factor = 1.0 - s
+    const factor = 1.0 - this.scanlinesStrength
     for (let y = 0; y < height; y += 2) {
       for (let x = 0; x < width; x++) {
         const ci = (y * width + x) * 4
@@ -129,62 +152,99 @@ export class SpiderVerseEffect {
     }
   }
 
-  private applyGlitch(
+  private updateGlitches(
     buf: { char: Uint32Array; fg: Float32Array; bg: Float32Array; attributes: Uint32Array },
     width: number,
     height: number,
-    deltaTime: number,
+    dt: number,
   ): void {
     // Decay existing glitches
-    this.glitchLines = this.glitchLines.filter((g) => {
-      g.ttl -= deltaTime
+    this.glitches = this.glitches.filter((g) => {
+      g.ttl -= dt
       return g.ttl > 0
     })
 
-    // Maybe spawn new glitches
-    if (this.glitchLines.length === 0 && Math.random() < this.glitchChance * deltaTime) {
-      const count = 1 + Math.floor(Math.random() * this.maxGlitchLines)
-      for (let i = 0; i < count; i++) {
-        this.glitchLines.push({
-          y: Math.floor(Math.random() * height),
-          shift: Math.floor((Math.random() - 0.5) * 2 * this.maxShift),
-          ttl: 0.03 + Math.random() * 0.12, // 30-150ms
-        })
-      }
+    // Cooldown between glitch bursts
+    this.glitchCooldown -= dt
+    if (this.glitchCooldown > 0 || this.glitches.length > 0) {
+      this.applyGlitches(buf, width, height)
+      return
     }
 
-    // Apply active glitches by shifting row data
-    if (this.glitchLines.length === 0) return
+    // Low chance to spawn a new glitch burst: ~0.12/sec = one every ~8 seconds
+    if (Math.random() > 0.12 * dt) {
+      this.applyGlitches(buf, width, height)
+      return
+    }
 
-    const tempChar = new Uint32Array(width)
-    const tempFg = new Float32Array(width * 4)
-    const tempBg = new Float32Array(width * 4)
-    const tempAttr = new Uint32Array(width)
+    // Spawn 1-3 localized glitches in a cluster
+    const count = 1 + Math.floor(Math.random() * 3)
+    // Pick a focal point — glitches cluster near each other
+    const focusX = Math.floor(Math.random() * width)
+    const focusY = Math.floor(Math.random() * height)
 
-    for (const g of this.glitchLines) {
-      if (g.y < 0 || g.y >= height) continue
-      const base = g.y * width
+    for (let i = 0; i < count; i++) {
+      // Region near the focal point, with some spread
+      const gw = 8 + Math.floor(Math.random() * 30) // 8-37 cells wide
+      const gh = 1 + Math.floor(Math.random() * 3) // 1-3 rows tall
+      const gx = Math.max(0, Math.min(width - gw, focusX + Math.floor((Math.random() - 0.5) * 40)))
+      const gy = Math.max(0, Math.min(height - gh, focusY + Math.floor((Math.random() - 0.5) * 6)))
 
-      tempChar.set(buf.char.subarray(base, base + width))
-      tempFg.set(buf.fg.subarray(base * 4, (base + width) * 4))
-      tempBg.set(buf.bg.subarray(base * 4, (base + width) * 4))
-      tempAttr.set(buf.attributes.subarray(base, base + width))
+      this.glitches.push({
+        x: gx,
+        y: gy,
+        w: gw,
+        h: gh,
+        shift: Math.floor((Math.random() - 0.5) * 12),
+        colorBleed: Math.random() < 0.3,
+        ttl: 0.04 + Math.random() * 0.1, // 40-140ms — brief flash
+      })
+    }
 
-      for (let x = 0; x < width; x++) {
-        const srcX = (((x - g.shift) % width) + width) % width
-        buf.char[base + x] = tempChar[srcX]
-        buf.attributes[base + x] = tempAttr[srcX]
+    // Cooldown: 3-8 seconds before next burst
+    this.glitchCooldown = 3.0 + Math.random() * 5.0
 
-        const di = (base + x) * 4
-        const si = srcX * 4
-        buf.fg[di] = tempFg[si]
-        buf.fg[di + 1] = tempFg[si + 1]
-        buf.fg[di + 2] = tempFg[si + 2]
-        buf.fg[di + 3] = tempFg[si + 3]
-        buf.bg[di] = tempBg[si]
-        buf.bg[di + 1] = tempBg[si + 1]
-        buf.bg[di + 2] = tempBg[si + 2]
-        buf.bg[di + 3] = tempBg[si + 3]
+    this.applyGlitches(buf, width, height)
+  }
+
+  private applyGlitches(
+    buf: { char: Uint32Array; fg: Float32Array; bg: Float32Array; attributes: Uint32Array },
+    width: number,
+    height: number,
+  ): void {
+    if (this.glitches.length === 0) return
+
+    for (const g of this.glitches) {
+      for (let row = g.y; row < g.y + g.h && row < height; row++) {
+        const base = row * width
+
+        for (let col = g.x; col < g.x + g.w && col < width; col++) {
+          // Read from shifted source position
+          const srcCol = Math.max(0, Math.min(width - 1, col + g.shift))
+          const di = base + col
+          const si = base + srcCol
+
+          buf.char[di] = buf.char[si]
+          buf.attributes[di] = buf.attributes[si]
+
+          const dc = di * 4
+          const sc = si * 4
+          buf.fg[dc] = buf.fg[sc]
+          buf.fg[dc + 1] = buf.fg[sc + 1]
+          buf.fg[dc + 2] = buf.fg[sc + 2]
+          buf.fg[dc + 3] = buf.fg[sc + 3]
+          buf.bg[dc] = buf.bg[sc]
+          buf.bg[dc + 1] = buf.bg[sc + 1]
+          buf.bg[dc + 2] = buf.bg[sc + 2]
+          buf.bg[dc + 3] = buf.bg[sc + 3]
+
+          // Optional: color bleed — tint the region cyan/magenta
+          if (g.colorBleed) {
+            const tint = g.shift > 0 ? 0 : 2 // red or blue channel boost
+            buf.fg[dc + tint] = Math.min(1, buf.fg[dc + tint] + 0.15)
+            buf.bg[dc + tint] = Math.min(1, buf.bg[dc + tint] + 0.08)
+          }
+        }
       }
     }
   }
