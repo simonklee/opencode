@@ -63,9 +63,11 @@ export class SpiderVerseEffect {
   private microTimer = 0
   private microInterval = 0.05 // re-roll every 50ms
 
-  private idleTimer = 3.0 + Math.random() * 2.0
+  // Schedule: pre-generated timestamps for episodes in a ~60s window.
+  // Non-uniform distribution — some cluster, some have long gaps.
+  private clock = 0
+  private schedule: { time: number; big: boolean }[] = []
   private episode: Episode | null = null
-  private episodeCount = 0
 
   apply = (buffer: OptimizedBuffer, deltaTimeMs: number): void => {
     const width = buffer.width
@@ -91,27 +93,63 @@ export class SpiderVerseEffect {
   }
 
   private tick(dt: number, width: number, height: number): void {
+    this.clock += dt
+
+    // Generate schedule if empty
+    if (this.schedule.length === 0) {
+      this.schedule = this.generateSchedule()
+    }
+
+    // Active episode: advance it
     if (this.episode) {
       this.episode.elapsed += dt
       if (this.episode.elapsed >= this.episode.duration) {
         this.episode = null
-        this.idleTimer = this.episodeCount % 5 === 0 ? 8.0 + Math.random() * 6.0 : 5.0 + Math.random() * 7.0
-        return
+      } else {
+        this.episode.jitterAccum += dt
+        if (this.episode.jitterAccum >= this.episode.jitterInterval) {
+          this.episode.jitterAccum = 0
+          this.jitter(this.episode)
+        }
       }
-
-      this.episode.jitterAccum += dt
-      if (this.episode.jitterAccum >= this.episode.jitterInterval) {
-        this.episode.jitterAccum = 0
-        this.jitter(this.episode)
-      }
-    } else {
-      this.idleTimer -= dt
-      if (this.idleTimer <= 0) {
-        this.episodeCount++
-        this.episode =
-          this.episodeCount % 5 === 0 ? this.composeBigEpisode(width, height) : this.composeEpisode(width, height)
-      }
+      return
     }
+
+    // Check if next scheduled episode should fire
+    if (this.schedule.length > 0 && this.clock >= this.schedule[0].time) {
+      const next = this.schedule.shift()!
+      this.episode = next.big ? this.composeBigEpisode(width, height) : this.composeEpisode(width, height)
+    }
+  }
+
+  // Generate 6-10 episode timestamps across a ~60s window.
+  // Uses exponential inter-arrival times (Poisson process) which
+  // naturally creates clusters and long gaps.
+  private generateSchedule(): { time: number; big: boolean }[] {
+    const count = 6 + Math.floor(Math.random() * 5) // 6-10 episodes
+    const window = 50 + Math.random() * 20 // 50-70s window
+
+    // Generate random timestamps using exponential gaps
+    // (inverse CDF sampling: -ln(U) / lambda)
+    const times: number[] = []
+    const lambda = count / window // average rate
+    let t = this.clock + 2.0 + Math.random() * 3.0 // first one 2-5s from now
+
+    for (let i = 0; i < count; i++) {
+      times.push(t)
+      // Exponential gap — naturally clusters some, spaces others
+      const gap = -Math.log(1 - Math.random()) / lambda
+      // Clamp: at least 1.5s apart (episode needs to finish), at most 15s
+      t += Math.max(1.5, Math.min(15, gap))
+    }
+
+    // ~20% are big episodes, but never two big ones in a row
+    let lastBig = false
+    return times.map((time) => {
+      const big = !lastBig && Math.random() < 0.2
+      lastBig = big
+      return { time, big }
+    })
   }
 
   private jitter(ep: Episode): void {
