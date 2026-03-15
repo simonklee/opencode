@@ -2,6 +2,7 @@ import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentu
 import { Clipboard } from "@tui/util/clipboard"
 import { Selection } from "@tui/util/selection"
 import { MouseButton, TextAttributes } from "@opentui/core"
+import { SpiderVerseEffect } from "./spiderverse"
 import { RouteProvider, useRoute } from "@tui/context/route"
 import { Switch, Match, createEffect, untrack, ErrorBoundary, createSignal, onMount, batch, Show, on } from "solid-js"
 import { win32DisableProcessedInput, win32FlushInputBuffer, win32InstallCtrlCGuard } from "./win32"
@@ -255,6 +256,20 @@ function App() {
     renderer.clearSelection()
   }
   const [terminalTitleEnabled, setTerminalTitleEnabled] = createSignal(kv.get("terminal_title_enabled", true))
+
+  // Spider-Verse effect
+  const spiderVerse = new SpiderVerseEffect()
+  const [spiderVerseEnabled, setSpiderVerseEnabled] = createSignal(false)
+  createEffect(() => {
+    if (spiderVerseEnabled()) {
+      renderer.addPostProcessFn(spiderVerse.apply)
+      renderer.requestLive()
+    } else {
+      renderer.removePostProcessFn(spiderVerse.apply)
+      renderer.dropLive()
+      renderer.requestRender()
+    }
+  })
 
   createEffect(() => {
     console.log(JSON.stringify(route.data))
@@ -672,6 +687,15 @@ function App() {
       onSelect: (dialog) => {
         const current = kv.get("diff_wrap_mode", "word")
         kv.set("diff_wrap_mode", current === "word" ? "none" : "word")
+        dialog.clear()
+      },
+    },
+    {
+      title: spiderVerseEnabled() ? "Disable Spider-Verse mode" : "Enable Spider-Verse mode",
+      value: "app.toggle.spiderverse",
+      category: "System",
+      onSelect: (dialog) => {
+        setSpiderVerseEnabled((prev) => !prev)
         dialog.clear()
       },
     },
