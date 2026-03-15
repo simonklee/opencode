@@ -4,7 +4,19 @@ import { Selection } from "@tui/util/selection"
 import { MouseButton, TextAttributes } from "@opentui/core"
 import { SpiderVerseEffect } from "./spiderverse"
 import { RouteProvider, useRoute } from "@tui/context/route"
-import { Switch, Match, createEffect, untrack, ErrorBoundary, createSignal, onMount, batch, Show, on } from "solid-js"
+import {
+  Switch,
+  Match,
+  createEffect,
+  untrack,
+  ErrorBoundary,
+  createSignal,
+  onMount,
+  onCleanup,
+  batch,
+  Show,
+  on,
+} from "solid-js"
 import { win32DisableProcessedInput, win32FlushInputBuffer, win32InstallCtrlCGuard } from "./win32"
 import { Installation } from "@/installation"
 import { Flag } from "@/flag/flag"
@@ -261,14 +273,14 @@ function App() {
   const spiderVerse = new SpiderVerseEffect()
   const [spiderVerseEnabled, setSpiderVerseEnabled] = createSignal(false)
   createEffect(() => {
-    if (spiderVerseEnabled()) {
-      renderer.addPostProcessFn(spiderVerse.apply)
-      renderer.requestLive()
-    } else {
+    if (!spiderVerseEnabled()) return
+    renderer.addPostProcessFn(spiderVerse.apply)
+    renderer.requestLive()
+    onCleanup(() => {
       renderer.removePostProcessFn(spiderVerse.apply)
       renderer.dropLive()
       renderer.requestRender()
-    }
+    })
   })
 
   createEffect(() => {

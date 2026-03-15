@@ -50,7 +50,7 @@ interface Episode {
   jitterAccum: number
 }
 
-type Buffers = { char: Uint32Array; fg: Float32Array; bg: Float32Array; attributes: Uint32Array }
+type Buffers = OptimizedBuffer["buffers"]
 
 export class SpiderVerseEffect {
   halftoneEnabled = true
@@ -58,6 +58,8 @@ export class SpiderVerseEffect {
   halftoneStrength = 0.08
   scanlinesEnabled = true
   scanlinesStrength = 0.04
+  soundEnabled = true
+  private audio = new GlitchAudio()
 
   // Micro-artifacts: tiny random pops for texture (always-on, sparse)
   private microTimer = 0
@@ -69,11 +71,39 @@ export class SpiderVerseEffect {
   private schedule: { time: number; big: boolean }[] = []
   private episode: Episode | null = null
 
+  // Pre-allocated temp buffers — avoids per-frame allocations
+  private tmpFg: Float32Array | null = null
+  private tmpBg: Float32Array | null = null
+  private rowChar: Uint32Array | null = null
+  private rowFg: Float32Array | null = null
+  private rowBg: Float32Array | null = null
+  private rowAttr: Uint32Array | null = null
+  private tmpWidth = 0
+  private tmpSize = 0
+
+  private ensureTemp(width: number, height: number): void {
+    const size = width * height
+    if (this.tmpSize < size) {
+      this.tmpFg = new Float32Array(size * 4)
+      this.tmpBg = new Float32Array(size * 4)
+      this.tmpSize = size
+    }
+    if (this.tmpWidth < width) {
+      this.rowChar = new Uint32Array(width)
+      this.rowFg = new Float32Array(width * 4)
+      this.rowBg = new Float32Array(width * 4)
+      this.rowAttr = new Uint32Array(width)
+      this.tmpWidth = width
+    }
+  }
+
   apply = (buffer: OptimizedBuffer, deltaTimeMs: number): void => {
     const width = buffer.width
     const height = buffer.height
     const buf = buffer.buffers
     const dt = deltaTimeMs / 1000
+
+    this.ensureTemp(width, height)
 
     if (this.halftoneEnabled) this.applyHalftone(buf.bg, width, height)
     if (this.scanlinesEnabled) this.applyScanlines(buf.fg, buf.bg, width, height)
@@ -119,6 +149,7 @@ export class SpiderVerseEffect {
     if (this.schedule.length > 0 && this.clock >= this.schedule[0].time) {
       const next = this.schedule.shift()!
       this.episode = next.big ? this.composeBigEpisode(width, height) : this.composeEpisode(width, height)
+      if (this.soundEnabled) this.audio.play(next.big)
     }
   }
 
@@ -304,10 +335,10 @@ export class SpiderVerseEffect {
 
   // Horizontal strips: shift rows left/right within the region
   private applyHStrips(buf: Buffers, width: number, height: number, ep: Episode): void {
-    const tempChar = new Uint32Array(width)
-    const tempFg = new Float32Array(width * 4)
-    const tempBg = new Float32Array(width * 4)
-    const tempAttr = new Uint32Array(width)
+    const tempChar = this.rowChar!
+    const tempFg = this.rowFg!
+    const tempBg = this.rowBg!
+    const tempAttr = this.rowAttr!
 
     for (const strip of ep.hStrips) {
       const shift = strip.xShift
@@ -437,10 +468,10 @@ export class SpiderVerseEffect {
   // --- Tear rows (big episodes) ---
 
   private applyTearRows(buf: Buffers, width: number, height: number, tearRows: TearRow[]): void {
-    const tempChar = new Uint32Array(width)
-    const tempFg = new Float32Array(width * 4)
-    const tempBg = new Float32Array(width * 4)
-    const tempAttr = new Uint32Array(width)
+    const tempChar = this.rowChar!
+    const tempFg = this.rowFg!
+    const tempBg = this.rowBg!
+    const tempAttr = this.rowAttr!
 
     for (const tear of tearRows) {
       if (tear.y < 0 || tear.y >= height || tear.shift === 0) continue
@@ -479,8 +510,10 @@ export class SpiderVerseEffect {
     strength: number,
   ): void {
     const offset = Math.max(1, Math.round(strength))
-    const srcFg = Float32Array.from(fg)
-    const srcBg = Float32Array.from(bg)
+    const srcFg = this.tmpFg!
+    const srcBg = this.tmpBg!
+    srcFg.set(fg)
+    srcBg.set(bg)
 
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
@@ -511,9 +544,11 @@ export class SpiderVerseEffect {
         const ox = y % 2 === 0 ? 0 : Math.floor(scale / 2)
         const gx = ((x + ox) % scale) - scale / 2
         const gy = (y % scale) - scale / 2
-        const dist = Math.sqrt(gx * gx + gy * gy) / (scale / 2)
-        if (dist > 0.7) continue
+        const r = scale / 2
+        const d2 = (gx * gx + gy * gy) / (r * r)
+        if (d2 > 0.49) continue // 0.7² = 0.49
 
+        const dist = Math.sqrt(d2)
         const mod = -strength * midtoneFactor * (1.0 - dist / 0.7)
         bg[ci] = Math.max(0, bg[ci] + mod)
         bg[ci + 1] = Math.max(0, bg[ci + 1] + mod)
@@ -535,5 +570,127 @@ export class SpiderVerseEffect {
         bg[ci + 2] *= factor
       }
     }
+  }
+}
+
+// Procedural glitch audio synced with visual episodes.
+// Pre-generates a pool of short WAV bursts (noise + bit-crush + digital
+// artifacts) and plays them fire-and-forget via aplay.
+
+class GlitchAudio {
+  volume = 0.25
+  private rate = 22050
+  private pool: Buffer[] = []
+  private bigPool: Buffer[] = []
+  private active = 0
+
+  constructor() {
+    for (let i = 0; i < 6; i++) this.pool.push(this.synth(false))
+    for (let i = 0; i < 3; i++) this.bigPool.push(this.synth(true))
+  }
+
+  play(big: boolean) {
+    if (this.active >= 3) return
+    this.active++
+    try {
+      const pool = big ? this.bigPool : this.pool
+      const wav = pool[Math.floor(Math.random() * pool.length)]
+      const proc = Bun.spawn(["aplay", "-q", "-"], {
+        stdin: "pipe",
+        stdout: "ignore",
+        stderr: "ignore",
+      })
+      proc.stdin.write(wav)
+      proc.stdin.end()
+      proc.exited.then(() => {
+        this.active--
+      })
+    } catch {
+      this.active--
+    }
+  }
+
+  // Spider-Verse glitch = damaged signal, not music.
+  // Core sound: "BZZRT" — ring-modulated high-pass noise (harsh electrical
+  // buzz), granular stutter (CD-skip repetition), scattered clicks/pops,
+  // brief signal dropouts. Hard-clipped and bit-crushed.
+  private synth(big: boolean): Buffer {
+    const dur = big ? 0.2 + Math.random() * 0.4 : 0.08 + Math.random() * 0.2
+    const len = Math.floor(this.rate * dur)
+    const mix = new Float32Array(len)
+
+    // --- Core: ring-modulated noise → mid-range electrical buzz ---
+    // Ring freq in the 200-1200Hz range gives body (not hiss, not bass).
+    // Raw noise (no high-pass) so the buzz has weight.
+    const ringFreq = 200 + Math.random() * 1000
+    for (let i = 0; i < len; i++) {
+      const t = i / this.rate
+      const noise = Math.random() * 2 - 1
+      const ring = Math.sin(2 * Math.PI * ringFreq * t)
+      const env = Math.min(1, i / (this.rate * 0.0003)) * Math.exp(-t * (big ? 2.5 : 5))
+      mix[i] = noise * ring * (big ? 0.7 : 0.5) * env
+    }
+
+    // --- Granular stutter: capture a micro-chunk, repeat it ---
+    const grainMs = 2 + Math.random() * 10
+    const grainLen = Math.floor((this.rate * grainMs) / 1000)
+    const grainStart = Math.floor(Math.random() * Math.max(1, len - grainLen))
+    const reps = big ? 4 + Math.floor(Math.random() * 10) : 1 + Math.floor(Math.random() * 4)
+    for (let r = 1; r <= reps; r++) {
+      const dst = grainStart + r * grainLen
+      for (let i = 0; i < grainLen && dst + i < len; i++) {
+        mix[dst + i] = mix[grainStart + i] * (0.6 + Math.random() * 0.4)
+      }
+    }
+
+    // --- Clicks/pops scattered throughout ---
+    const clicks = big ? 6 + Math.floor(Math.random() * 12) : 2 + Math.floor(Math.random() * 5)
+    for (let c = 0; c < clicks; c++) {
+      const pos = Math.floor(Math.random() * len)
+      if (pos < len) mix[pos] += (Math.random() > 0.5 ? 1 : -1) * (0.4 + Math.random() * 0.6)
+    }
+
+    // --- Signal dropouts (brief silences) ---
+    const gaps = big ? 1 + Math.floor(Math.random() * 3) : Math.floor(Math.random() * 2)
+    for (let g = 0; g < gaps; g++) {
+      const start = Math.floor(Math.random() * len * 0.8)
+      const gapLen = Math.floor(this.rate * (0.003 + Math.random() * 0.015))
+      for (let i = start; i < Math.min(start + gapLen, len); i++) mix[i] *= 0.02
+    }
+
+    // --- Master: hard clip + bit-crush ---
+    const pcm = new Int16Array(len)
+    const vol = this.volume
+    const crush = big ? 256 : 128
+    for (let i = 0; i < len; i++) {
+      let s = Math.max(-1, Math.min(1, mix[i] * vol * 2))
+      s = Math.round(s * crush) / crush
+      pcm[i] = Math.max(-32768, Math.min(32767, Math.floor(s * 32767)))
+    }
+
+    return this.wav(pcm)
+  }
+
+  private wav(pcm: Int16Array): Buffer {
+    const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength)
+    const size = bytes.byteLength
+    const buf = Buffer.alloc(44 + size)
+
+    buf.write("RIFF", 0)
+    buf.writeUInt32LE(36 + size, 4)
+    buf.write("WAVE", 8)
+    buf.write("fmt ", 12)
+    buf.writeUInt32LE(16, 16) // chunk size
+    buf.writeUInt16LE(1, 20) // PCM format
+    buf.writeUInt16LE(1, 22) // mono
+    buf.writeUInt32LE(this.rate, 24) // sample rate
+    buf.writeUInt32LE(this.rate * 2, 28) // byte rate
+    buf.writeUInt16LE(2, 32) // block align
+    buf.writeUInt16LE(16, 34) // bits per sample
+    buf.write("data", 36)
+    buf.writeUInt32LE(size, 40)
+    buf.set(bytes, 44)
+
+    return buf
   }
 }
