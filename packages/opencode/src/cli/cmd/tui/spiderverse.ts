@@ -33,8 +33,8 @@ export class SpiderVerseEffect {
   scanlinesStrength = 0.04
 
   // --- Glitch ---
-  // Rare, localized, brief
-  private glitchCooldown = 0
+  // Rare, localized, brief — timer-based so they reliably appear
+  private glitchTimer = 2.0 + Math.random() * 3.0 // first burst in 2-5s
   private glitches: Glitch[] = []
 
   // --- Internal state ---
@@ -164,28 +164,20 @@ export class SpiderVerseEffect {
       return g.ttl > 0
     })
 
-    // Cooldown between glitch bursts
-    this.glitchCooldown -= dt
-    if (this.glitchCooldown > 0 || this.glitches.length > 0) {
-      this.applyGlitches(buf, width, height)
-      return
-    }
-
-    // Low chance to spawn a new glitch burst: ~0.12/sec = one every ~8 seconds
-    if (Math.random() > 0.12 * dt) {
+    // Timer counts down — when it hits zero, guaranteed glitch burst
+    this.glitchTimer -= dt
+    if (this.glitchTimer > 0) {
       this.applyGlitches(buf, width, height)
       return
     }
 
     // Spawn 1-3 localized glitches in a cluster
     const count = 1 + Math.floor(Math.random() * 3)
-    // Pick a focal point — glitches cluster near each other
     const focusX = Math.floor(Math.random() * width)
     const focusY = Math.floor(Math.random() * height)
 
     for (let i = 0; i < count; i++) {
-      // Region near the focal point, with some spread
-      const gw = 8 + Math.floor(Math.random() * 30) // 8-37 cells wide
+      const gw = 10 + Math.floor(Math.random() * 35) // 10-44 cells wide
       const gh = 1 + Math.floor(Math.random() * 3) // 1-3 rows tall
       const gx = Math.max(0, Math.min(width - gw, focusX + Math.floor((Math.random() - 0.5) * 40)))
       const gy = Math.max(0, Math.min(height - gh, focusY + Math.floor((Math.random() - 0.5) * 6)))
@@ -195,14 +187,14 @@ export class SpiderVerseEffect {
         y: gy,
         w: gw,
         h: gh,
-        shift: Math.floor((Math.random() - 0.5) * 12),
-        colorBleed: Math.random() < 0.3,
-        ttl: 0.04 + Math.random() * 0.1, // 40-140ms — brief flash
+        shift: Math.floor((Math.random() - 0.5) * 14),
+        colorBleed: Math.random() < 0.4,
+        ttl: 0.06 + Math.random() * 0.15, // 60-210ms
       })
     }
 
-    // Cooldown: 3-8 seconds before next burst
-    this.glitchCooldown = 3.0 + Math.random() * 5.0
+    // Schedule next burst: 4-8 seconds
+    this.glitchTimer = 4.0 + Math.random() * 4.0
 
     this.applyGlitches(buf, width, height)
   }
