@@ -3,6 +3,7 @@ import { Clipboard } from "@tui/util/clipboard"
 import { Selection } from "@tui/util/selection"
 import { MouseButton, TextAttributes } from "@opentui/core"
 import { SpiderVerseEffect } from "./spiderverse"
+import { SuperColliderEffect } from "./supercollider"
 import { RouteProvider, useRoute } from "@tui/context/route"
 import {
   Switch,
@@ -278,6 +279,21 @@ function App() {
     renderer.requestLive()
     onCleanup(() => {
       renderer.removePostProcessFn(spiderVerse.apply)
+      renderer.dropLive()
+      renderer.requestRender()
+    })
+  })
+
+  // Super-Collider effect (one-shot timed sequence)
+  const collider = new SuperColliderEffect()
+  const [colliderActive, setColliderActive] = createSignal(false)
+  collider.onComplete = () => setColliderActive(false)
+  createEffect(() => {
+    if (!colliderActive()) return
+    renderer.addPostProcessFn(collider.apply)
+    renderer.requestLive()
+    onCleanup(() => {
+      renderer.removePostProcessFn(collider.apply)
       renderer.dropLive()
       renderer.requestRender()
     })
@@ -708,6 +724,27 @@ function App() {
       category: "System",
       onSelect: (dialog) => {
         setSpiderVerseEnabled((prev) => !prev)
+        dialog.clear()
+      },
+    },
+    {
+      title: spiderVerse.soundEnabled ? "Disable Spider-Verse sound" : "Enable Spider-Verse sound",
+      value: "app.toggle.spiderverse.sound",
+      category: "System",
+      onSelect: (dialog) => {
+        spiderVerse.soundEnabled = !spiderVerse.soundEnabled
+        dialog.clear()
+      },
+    },
+    {
+      title: "Super-Collider",
+      value: "app.supercollider",
+      category: "System",
+      onSelect: (dialog) => {
+        if (!collider.active) {
+          collider.start()
+          setColliderActive(true)
+        }
         dialog.clear()
       },
     },
