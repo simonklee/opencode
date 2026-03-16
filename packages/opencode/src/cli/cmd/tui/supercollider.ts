@@ -17,9 +17,9 @@ import type { OptimizedBuffer } from "@opentui/core"
 
 const FIRE_DUR = 1.5
 const DUEL_DUR = 4.3
-const EXPLODE_DUR = 1.0
-const WHITE_DUR = 0.2
-const FADE_DUR = 1.2
+const EXPLODE_DUR = 0.6
+const WHITE_DUR = 0.1
+const FADE_DUR = 0.8
 
 const DUEL_START = FIRE_DUR
 const DUEL_END = DUEL_START + DUEL_DUR
@@ -94,7 +94,62 @@ export class SuperColliderEffect {
 
     const t = this.elapsed
 
-    // === Logo masking: removed ===
+    // === Logo masking ===
+    // Hide logo initially, then slowly dissolve/fade it in during the duel
+    const REVEAL_START = FIRE_DUR
+    const REVEAL_END = FIRE_DUR + 2.5
+
+    if (t < REVEAL_END) {
+      const top = Math.max(0, cy - Math.floor(MASK_H / 2))
+      const bottom = Math.min(h - 1, top + MASK_H - 1)
+      const left = Math.max(0, Math.floor(cx - MASK_W / 2))
+      const right = Math.min(w - 1, left + MASK_W - 1)
+
+      // Sample background color from an assumed empty area (e.g. top left)
+      const bgR = buf.bg[0]
+      const bgG = buf.bg[1]
+      const bgB = buf.bg[2]
+
+      const revealProg = t < REVEAL_START ? 0 : (t - REVEAL_START) / (REVEAL_END - REVEAL_START)
+
+      for (let y = top; y <= bottom; y++) {
+        for (let x = left; x <= right; x++) {
+          const idx = y * w + x
+          const ci = idx * 4
+
+          if (revealProg === 0) {
+            buf.char[idx] = 0x20 // Space
+            buf.fg[ci] = bgR
+            buf.fg[ci + 1] = bgG
+            buf.fg[ci + 2] = bgB
+            buf.bg[ci] = bgR
+            buf.bg[ci + 1] = bgG
+            buf.bg[ci + 2] = bgB
+          } else {
+            // Glitchy dissolve: randomly hide cells based on reveal progress
+            if (Math.random() > revealProg) {
+              buf.char[idx] = 0x20
+              buf.fg[ci] = bgR
+              buf.fg[ci + 1] = bgG
+              buf.fg[ci + 2] = bgB
+              buf.bg[ci] = bgR
+              buf.bg[ci + 1] = bgG
+              buf.bg[ci + 2] = bgB
+            } else {
+              // For revealed cells, interpolate colors to fade them up from the background color
+              const inv = 1 - revealProg
+              buf.fg[ci] = buf.fg[ci] * revealProg + bgR * inv
+              buf.fg[ci + 1] = buf.fg[ci + 1] * revealProg + bgG * inv
+              buf.fg[ci + 2] = buf.fg[ci + 2] * revealProg + bgB * inv
+
+              buf.bg[ci] = buf.bg[ci] * revealProg + bgR * inv
+              buf.bg[ci + 1] = buf.bg[ci + 1] * revealProg + bgG * inv
+              buf.bg[ci + 2] = buf.bg[ci + 2] * revealProg + bgB * inv
+            }
+          }
+        }
+      }
+    }
 
     // === Phase dispatch ===
     if (t < DUEL_END) {
