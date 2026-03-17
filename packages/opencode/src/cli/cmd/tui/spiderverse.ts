@@ -63,7 +63,7 @@ export class SpiderVerseEffect {
 
   // Micro-artifacts: tiny random pops for texture (always-on, sparse)
   private microTimer = 0
-  private microInterval = 0.05 // re-roll every 50ms
+  private microInterval = 0.03 // re-roll every 30ms
 
   // Schedule: pre-generated timestamps for episodes in a ~60s window.
   // Non-uniform distribution — some cluster, some have long gaps.
@@ -268,9 +268,9 @@ export class SpiderVerseEffect {
       regionH,
       chromaticStrength: 1,
       tearRows: [],
-      duration: 1.0 + Math.random() * 1.5,
+      duration: 0.6 + Math.random() * 1.0,
       elapsed: 0,
-      jitterInterval: 0.06 + Math.random() * 0.04,
+      jitterInterval: 0.04 + Math.random() * 0.03,
       jitterAccum: 0,
     }
   }
@@ -278,7 +278,7 @@ export class SpiderVerseEffect {
   private composeBigEpisode(width: number, height: number): Episode {
     const ep = this.composeEpisode(width, height)
     ep.chromaticStrength = 3
-    ep.duration = 1.5 + Math.random() * 1.5
+    ep.duration = 1.0 + Math.random() * 1.0
 
     for (const s of ep.vStrips) s.maxShift = Math.round(s.maxShift * 2)
     for (const s of ep.hStrips) s.maxShift = Math.round(s.maxShift * 1.5)
@@ -578,7 +578,7 @@ export class SpiderVerseEffect {
 // artifacts) and plays them fire-and-forget via aplay.
 
 class GlitchAudio {
-  volume = 0.25
+  volume = 0.15
   private rate = 22050
   private pool: Buffer[] = []
   private bigPool: Buffer[] = []
@@ -611,43 +611,62 @@ class GlitchAudio {
   }
 
   // Spider-Verse glitch = damaged signal, not music.
-  // Core sound: "BZZRT" — ring-modulated high-pass noise (harsh electrical
-  // buzz), granular stutter (CD-skip repetition), scattered clicks/pops,
-  // brief signal dropouts. Hard-clipped and bit-crushed.
+  // We use oscillators (sine/saw/square) with aggressive pitch modulation
+  // rather than white noise to create a tearing "zap" sound.
   private synth(big: boolean): Buffer {
     const dur = big ? 0.2 + Math.random() * 0.4 : 0.08 + Math.random() * 0.2
     const len = Math.floor(this.rate * dur)
     const mix = new Float32Array(len)
 
-    // --- Core: ring-modulated noise → mid-range electrical buzz ---
-    // Ring freq in the 200-1200Hz range gives body (not hiss, not bass).
-    // Raw noise (no high-pass) so the buzz has weight.
-    const ringFreq = 200 + Math.random() * 1000
+    // --- Core: FM Oscillator Zap ---
+    // Instead of noise, use a base carrier frequency modulated by another.
+    const carrierFreq = 80 + Math.random() * 200 // Low body tone (80-280Hz)
+    const modFreq = 10 + Math.random() * 50 // Fast wobble/growl (10-60Hz)
+    const modIndex = 200 + Math.random() * 800 // How aggressive the wobble gets
+
     for (let i = 0; i < len; i++) {
       const t = i / this.rate
-      const noise = Math.random() * 2 - 1
-      const ring = Math.sin(2 * Math.PI * ringFreq * t)
-      const env = Math.min(1, i / (this.rate * 0.0003)) * Math.exp(-t * (big ? 2.5 : 5))
-      mix[i] = noise * ring * (big ? 0.7 : 0.5) * env
+
+      // The modulator creates the tearing/zipping quality
+      const modulator = Math.sin(2 * Math.PI * modFreq * t)
+
+      // The carrier is our main tone, driven by the modulator
+      // We use a pseudo-sawtooth/triangle shape for more harmonics
+      const phase = 2 * Math.PI * carrierFreq * t + modulator * modIndex * (t / dur)
+      const carrier = (phase % (2 * Math.PI)) / Math.PI - 1.0 // Sawtooth wave
+
+      // Sharp decay envelope
+      const env = Math.min(1, i / (this.rate * 0.0003)) * Math.exp(-t * (big ? 3 : 8))
+
+      mix[i] = carrier * (big ? 0.6 : 0.4) * env
     }
 
-    // --- Granular stutter: capture a micro-chunk, repeat it ---
-    const grainMs = 2 + Math.random() * 10
-    const grainLen = Math.floor((this.rate * grainMs) / 1000)
-    const grainStart = Math.floor(Math.random() * Math.max(1, len - grainLen))
-    const reps = big ? 4 + Math.floor(Math.random() * 10) : 1 + Math.floor(Math.random() * 4)
-    for (let r = 1; r <= reps; r++) {
-      const dst = grainStart + r * grainLen
-      for (let i = 0; i < grainLen && dst + i < len; i++) {
-        mix[dst + i] = mix[grainStart + i] * (0.6 + Math.random() * 0.4)
+    // --- Glitchy pitch drops (Tape Stop / CD Skip) ---
+    // Randomly select small chunks and pitch them way down by stretching the samples
+    const drops = big ? 2 + Math.floor(Math.random() * 3) : Math.floor(Math.random() * 2)
+    for (let d = 0; d < drops; d++) {
+      const dropStart = Math.floor(Math.random() * (len * 0.5))
+      const dropLen = Math.floor(this.rate * (0.02 + Math.random() * 0.05))
+      const stretch = 1.5 + Math.random() * 3.0 // stretch factor
+
+      if (dropStart + dropLen * stretch < len) {
+        // Copy original chunk
+        const chunk = new Float32Array(dropLen)
+        for (let i = 0; i < dropLen; i++) chunk[i] = mix[dropStart + i]
+
+        // Write stretched
+        for (let i = 0; i < dropLen * stretch; i++) {
+          const srcIdx = Math.floor(i / stretch)
+          mix[dropStart + i] = chunk[srcIdx] * 0.8 // slightly quieter
+        }
       }
     }
 
-    // --- Clicks/pops scattered throughout ---
-    const clicks = big ? 6 + Math.floor(Math.random() * 12) : 2 + Math.floor(Math.random() * 5)
+    // --- Clicks/pops scattered throughout (toned down) ---
+    const clicks = big ? 3 + Math.floor(Math.random() * 6) : 1 + Math.floor(Math.random() * 3)
     for (let c = 0; c < clicks; c++) {
       const pos = Math.floor(Math.random() * len)
-      if (pos < len) mix[pos] += (Math.random() > 0.5 ? 1 : -1) * (0.4 + Math.random() * 0.6)
+      if (pos < len) mix[pos] += (Math.random() > 0.5 ? 1 : -1) * (0.15 + Math.random() * 0.2)
     }
 
     // --- Signal dropouts (brief silences) ---
@@ -658,12 +677,17 @@ class GlitchAudio {
       for (let i = start; i < Math.min(start + gapLen, len); i++) mix[i] *= 0.02
     }
 
-    // --- Master: hard clip + bit-crush ---
+    // --- Master: saturation + light bit-crush ---
     const pcm = new Int16Array(len)
     const vol = this.volume
-    const crush = big ? 256 : 128
+    const crush = big ? 512 : 256
+
     for (let i = 0; i < len; i++) {
-      let s = Math.max(-1, Math.min(1, mix[i] * vol * 2))
+      // Soft clipping via tanh-like curve
+      let s = mix[i] * vol * 2.0
+      s = Math.max(-1, Math.min(1, s - Math.pow(s, 3) / 3)) // wave folder saturation
+
+      // Light bit-crush
       s = Math.round(s * crush) / crush
       pcm[i] = Math.max(-32768, Math.min(32767, Math.floor(s * 32767)))
     }
