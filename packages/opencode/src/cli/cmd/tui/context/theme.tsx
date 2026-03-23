@@ -512,13 +512,13 @@ export function tint(base: RGBA, overlay: RGBA, alpha: number): RGBA {
 function generateSystem(colors: TerminalColors, mode: "dark" | "light"): ThemeJson {
   const bg = RGBA.fromHex(colors.defaultBackground ?? colors.palette[0]!)
   const fg = RGBA.fromHex(colors.defaultForeground ?? colors.palette[7]!)
+  const text = RGBA.defaultForeground(fg)
   const transparent = RGBA.fromValues(bg.r, bg.g, bg.b, 0)
   const isDark = mode == "dark"
 
   const col = (i: number) => {
     const value = colors.palette[i]
-    if (value) return RGBA.fromHex(value)
-    return ansiToRgba(i)
+    return RGBA.fromIndex(i, value ? RGBA.fromHex(value) : ansiToRgba(i))
   }
 
   // Generate gray scale based on terminal background
@@ -559,7 +559,7 @@ function generateSystem(colors: TerminalColors, mode: "dark" | "light"): ThemeJs
       info: ansiColors.cyan,
 
       // Text colors
-      text: fg,
+      text,
       textMuted,
       selectedListItemText: bg,
 
@@ -589,31 +589,31 @@ function generateSystem(colors: TerminalColors, mode: "dark" | "light"): ThemeJs
       diffRemovedLineNumberBg,
 
       // Markdown colors
-      markdownText: fg,
-      markdownHeading: fg,
+      markdownText: text,
+      markdownHeading: text,
       markdownLink: ansiColors.blue,
       markdownLinkText: ansiColors.cyan,
       markdownCode: ansiColors.green,
       markdownBlockQuote: ansiColors.yellow,
       markdownEmph: ansiColors.yellow,
-      markdownStrong: fg,
+      markdownStrong: text,
       markdownHorizontalRule: grays[7],
       markdownListItem: ansiColors.blue,
       markdownListEnumeration: ansiColors.cyan,
       markdownImage: ansiColors.blue,
       markdownImageText: ansiColors.cyan,
-      markdownCodeBlock: fg,
+      markdownCodeBlock: text,
 
       // Syntax colors
       syntaxComment: textMuted,
       syntaxKeyword: ansiColors.magenta,
       syntaxFunction: ansiColors.blue,
-      syntaxVariable: fg,
+      syntaxVariable: text,
       syntaxString: ansiColors.green,
       syntaxNumber: ansiColors.yellow,
       syntaxType: ansiColors.cyan,
       syntaxOperator: ansiColors.cyan,
-      syntaxPunctuation: fg,
+      syntaxPunctuation: text,
     },
   }
 }
