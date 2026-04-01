@@ -521,9 +521,32 @@ function generateSystem(colors: TerminalColors, mode: "dark" | "light"): ThemeJs
     return RGBA.fromIndex(i, value ? RGBA.fromHex(value) : ansiToRgba(i))
   }
 
+  const ansi = Array.from({ length: 16 }, (_, i) => col(i))
+
+  const nearest = (rgba: RGBA) => {
+    const hit = ansi.reduce(
+      (best, item) => {
+        const dr = item.r - rgba.r
+        const dg = item.g - rgba.g
+        const db = item.b - rgba.b
+        const dist = dr * dr + dg * dg + db * db
+        if (dist >= best.dist) return best
+        return {
+          dist,
+          item,
+        }
+      },
+      {
+        dist: Number.POSITIVE_INFINITY,
+        item: ansi[0]!,
+      },
+    )
+    return RGBA.clone(hit.item)
+  }
+
   // Generate gray scale based on terminal background
-  const grays = generateGrayScale(bg, isDark)
-  const textMuted = generateMutedTextColor(bg, isDark)
+  const grays = generateGrayScale(bg, isDark, nearest)
+  const textMuted = generateMutedTextColor(bg, isDark, nearest)
 
   // ANSI color references
   const ansiColors = {
@@ -618,7 +641,7 @@ function generateSystem(colors: TerminalColors, mode: "dark" | "light"): ThemeJs
   }
 }
 
-function generateGrayScale(bg: RGBA, isDark: boolean): Record<number, RGBA> {
+function generateGrayScale(bg: RGBA, isDark: boolean, map: (rgba: RGBA) => RGBA): Record<number, RGBA> {
   const grays: Record<number, RGBA> = {}
 
   // RGBA stores floats in range 0-1, convert to 0-255
@@ -666,13 +689,13 @@ function generateGrayScale(bg: RGBA, isDark: boolean): Record<number, RGBA> {
       }
     }
 
-    grays[i] = RGBA.fromInts(Math.floor(newR), Math.floor(newG), Math.floor(newB))
+    grays[i] = map(RGBA.fromInts(Math.floor(newR), Math.floor(newG), Math.floor(newB)))
   }
 
   return grays
 }
 
-function generateMutedTextColor(bg: RGBA, isDark: boolean): RGBA {
+function generateMutedTextColor(bg: RGBA, isDark: boolean, map: (rgba: RGBA) => RGBA): RGBA {
   // RGBA stores floats in range 0-1, convert to 0-255
   const bgR = bg.r * 255
   const bgG = bg.g * 255
@@ -700,7 +723,7 @@ function generateMutedTextColor(bg: RGBA, isDark: boolean): RGBA {
     }
   }
 
-  return RGBA.fromInts(grayValue, grayValue, grayValue)
+  return map(RGBA.fromInts(grayValue, grayValue, grayValue))
 }
 
 function generateSyntax(theme: Theme) {
